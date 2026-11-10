@@ -1,0 +1,49 @@
+---
+# Add-on version. This MUST equal the pinned technitium/dns-server image tag
+# in Dockerfile (ARG BUILD_FROM). The auto-update GitHub Action bumps both
+# together; bumping this value is what makes Home Assistant show "Update".
+version: "15.6.2"
+name: Technitium DNS Server
+slug: technitium
+description: The official Technitium DNS Server Docker image, packaged as a Home Assistant add-on.
+# The "Visit … page" link in HA points at the release notes for the pinned
+# version. The auto-update workflow keeps this tag in sync with the version.
+url: https://github.com/TechnitiumSoftware/DnsServer/releases/tag/v15.6.2
+# amd64 is Jake's HAOS box; the others are free because the upstream image is
+# multi-arch, so the same add-on also works on a Pi if ever moved.
+arch:
+  - amd64
+  - aarch64
+  - armv7
+# Host networking is required: a DNS server must bind privileged port 53 on the
+# host, and it lets Technitium listen on a dedicated LAN IP (see DOCS.md).
+host_network: true
+# We provide our own entrypoint (run.sh); do not wrap it in s6/init.
+init: false
+startup: services
+boot: auto
+# Persist Technitium's own config + zones in a user-browsable add-on config dir
+# (survives restarts and version updates), and expose HA's certs read-only for
+# optional DoH/DoT.
+map:
+  - type: addon_config
+    read_only: false
+  - type: ssl
+    read_only: true
+# Host networking exposes whatever Technitium binds, so ports are not declared
+# here (HA can't remap them anyway). Ports and every protocol (DoH/DoT/DoQ,
+# DHCP) are configured in Technitium's web console.
+#
+# The only options are where the web console itself listens — everything else
+# (forwarders, blocking, zones, DNS endpoints, …) lives in Technitium and
+# persists in the add-on config dir.
+options:
+  web_service_local_addresses: "0.0.0.0,::"
+  web_service_http_port: 5380
+  web_service_https_port: 53443
+  web_service_enable_https: false
+schema:
+  web_service_local_addresses: "str"
+  web_service_http_port: "port"
+  web_service_https_port: "port"
+  web_service_enable_https: "bool"

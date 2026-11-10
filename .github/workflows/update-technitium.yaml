@@ -1,0 +1,134 @@
+---
+name: Update Technitium version
+
+# Checks Docker Hub daily for a newer STABLE technitium/dns-server release and,
+# when found, bumps the pinned tag in technitium/Dockerfile and the add-on
+# version in technitium/config.yaml, then commits to main. Home Assistant then
+# shows an "Update" for the add-on.
+#
+# Only strict semver tags (X.Y.Z) are considered; "latest" and any
+# pre-release-style tags are ignored.
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # 06:00 UTC daily
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-technitium
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine current and latest stable versions
+        id: versions
+        run: |
+          set -euo pipefail
+
+          current="$(grep -E '^version:' technitium/config.yaml | head -n1 \
+            | sed -E 's/^version:[[:space:]]*"?([^"]+)"?.*/\1/')"
+          echo "Current pinned version: ${current}"
+
+          # Page through Docker Hub tags, keep only strict semver X.Y.Z.
+          url="https://hub.docker.com/v2/repositories/technitium/dns-server/tags/?page_size=100"
+          tags=""
+          while [ -n "${url}" ] && [ "${url}" != "null" ]; do
+            resp="$(curl -fsSL "${url}")"
+            page_tags="$(echo "${resp}" | jq -r '.results[].name' \
+              | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+            tags="${tags}"$'\n'"${page_tags}"
+            url="$(echo "${resp}" | jq -r '.next')"
+          done
+
+          latest="$(echo "${tags}" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -n1)"
+          echo "Latest stable on Docker Hub: ${latest}"
+
+          if [ -z "${latest}" ]; then
+            echo "Could not determine latest stable tag; aborting." >&2
+            exit 1
+          fi
+
+          # Newer only if latest != current AND latest sorts highest.
+          highest="$(printf '%s\n%s\n' "${current}" "${latest}" | sort -V | tail -n1)"
+          if [ "${latest}" != "${current}" ] && [ "${highest}" = "${latest}" ]; then
+            echo "update=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "update=false" >> "${GITHUB_OUTPUT}"
+          fi
+          echo "current=${current}" >> "${GITHUB_OUTPUT}"
+          echo "latest=${latest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Bump version
+        if: steps.versions.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          latest="${{ steps.versions.outputs.latest }}"
+          tag="v${latest}"
+
+          # version, pinned image tag, and the info-page release-notes link
+          sed -i -E "s/^version:[[:space:]]*\"?[^\"]+\"?/version: \"${latest}\"/" \
+            technitium/config.yaml
+          sed -i -E "s#technitium/dns-server:[0-9]+\.[0-9]+\.[0-9]+#technitium/dns-server:${latest}#g" \
+            technitium/Dockerfile
+          sed -i -E "s#(DnsServer/releases/tag/)v[0-9]+\.[0-9]+\.[0-9]+#\1${tag}#g" \
+            technitium/config.yaml
+
+          # Fetch the upstream release notes for this version and prepend a
+          # changelog entry (shown by Home Assistant in the update dialog).
+          notes="$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/TechnitiumSoftware/DnsServer/releases/tags/${tag}" || echo '{}')"
+          title="$(echo "${notes}" | jq -r --arg t "${tag}" '.name // ("Technitium DNS Server " + $t)')"
+          body="$(echo "${notes}" | jq -r '.body // ""')"
+
+          {
+            echo "## ${latest}"
+            echo ""
+            echo "**${title}**"
+            echo ""
+            [ -n "${body}" ] && { echo "${body}"; echo ""; }
+            echo "- Release notes: https://github.com/TechnitiumSoftware/DnsServer/releases/tag/${tag}"
+            echo "- Full changelog: https://github.com/TechnitiumSoftware/DnsServer/blob/master/CHANGELOG.md"
+            echo ""
+          } > /tmp/entry.md
+
+          {
+            echo "# Changelog"
+            echo ""
+            echo "Each entry is the upstream Technitium DNS Server release this add-on installs."
+            echo "New versions (and their notes) are added automatically by the update workflow."
+            echo ""
+            cat /tmp/entry.md
+            # keep previous version entries (everything from the first "## " onward)
+            if [ -f technitium/CHANGELOG.md ]; then
+              awk 'f{print} /^## /{if(!f){f=1; print}}' technitium/CHANGELOG.md
+            fi
+          } > /tmp/CHANGELOG.md
+          mv /tmp/CHANGELOG.md technitium/CHANGELOG.md
+
+          echo "---- config.yaml ----"; grep -E '^version:|releases/tag' technitium/config.yaml
+          echo "---- Dockerfile ----"; grep -E 'technitium/dns-server:' technitium/Dockerfile
+
+      - name: Commit and push
+        if: steps.versions.outputs.update == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add technitium/config.yaml technitium/Dockerfile technitium/CHANGELOG.md
+          git commit -m "Update Technitium DNS Server to ${{ steps.versions.outputs.latest }}
+
+          Automated bump from ${{ steps.versions.outputs.current }} to ${{ steps.versions.outputs.latest }} (latest stable on Docker Hub)."
+          git push

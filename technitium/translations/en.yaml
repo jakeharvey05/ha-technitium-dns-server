@@ -1,0 +1,16 @@
+---
+configuration:
+  web_service_local_addresses:
+    name: Web console address
+    description: >-
+      IP address(es) the admin console listens on, comma-separated.
+      0.0.0.0,:: means all addresses. Set a specific IP to pin the console.
+  web_service_http_port:
+    name: Web console HTTP port
+    description: Port for the admin console over HTTP (default 5380).
+  web_service_https_port:
+    name: Web console HTTPS port
+    description: Port for the admin console over HTTPS (default 53443).
+  web_service_enable_https:
+    name: Enable HTTPS for the web console
+    description: Serve the admin console over HTTPS instead of HTTP.
